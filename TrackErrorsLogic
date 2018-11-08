@@ -1,0 +1,264 @@
+Option Compare Database
+Option Explicit
+
+Private Declare Sub Sleep Lib "kernel32" (ByVal dwMilliseconds As Long)
+
+Sub TrackErrors()
+
+    Dim IsError As New clsValidation
+    Dim rsCurrentWeek, rsErrorsLog, rsReversals, rsCoordinators, rsActiveAP As Recordset
+    Dim cSpecialBills As New Collection
+    Dim bAddToErrorLog, bRecordFound As Boolean
+    Dim sErrors() As String, sWeekOfDate, sSQLCommand, sReversalAP As String
+    Dim sRemoveCoord() As String
+    Dim i, iRecordCount, iErrorCount, iTotalErrors As Integer
+    
+    
+    SysCmd acSysCmdInitMeter, "Opening data tables", 1
+    sWeekOfDate = Split(Now - (Weekday(Now, vbMonday) - 1), " ")(0)
+    sErrors = Split("Line1,Line2,BillingCd,AllocCd,APVendNbr,ARVendNbr", ",")
+    sRemoveCoord = Split("OVA,J0M", ",")
+    Set rsCurrentWeek = CurrentDb.OpenRecordset("SpecialBillQueue")
+    Set rsErrorsLog = CurrentDb.OpenRecordset("SB_ErrorsLog")
+    Set rsCoordinators = CurrentDb.OpenRecordset("CoordinatorLog")
+    Set rsActiveAP = CurrentDb.OpenRecordset("ActiveAPVendors")
+    SysCmd acSysCmdRemoveMeter
+    
+    Sleep 2000
+    
+    With rsCurrentWeek
+        
+        iRecordCount = 1
+        .MoveLast
+        .MoveFirst
+    
+        Do Until .EOF
+            SysCmd acSysCmdInitMeter, "Checking errors for special bill: " & iRecordCount & " of " & .RecordCount, .RecordCount
+            SysCmd acSysCmdUpdateMeter, iRecordCount
+            iRecordCount = iRecordCount + 1
+            iErrorCount = 0
+        
+            cSpecialBills.Add .Fields("Special Bill ID"), "SpecialBillID"
+            cSpecialBills.Add Left(.Fields("Description Line 5"), 3), "CoordID"
+            
+            If IsNull(cSpecialBills("CoordID")) Then
+                cSpecialBills.Remove "CoordID"
+                cSpecialBills.Add Left(.Fields("Last Updated User Id"), 3), "CoordID"
+            End If
+            
+            If IsError.RemoveCoordSB(sRemoveCoord, cSpecialBills("CoordID")) Then
+                .Delete
+                GoTo NextRecord
+            End If
+            
+            cSpecialBills.Add .Fields("Invoice Date"), "InvDt"
+            
+            IsError.CheckCoordinatorLog cSpecialBills("CoordID"), rsCoordinators
+            
+            If IsError.LineOne(.Fields("Description Line 1")) Then
+                bAddToErrorLog = True
+                cSpecialBills.Add .Fields("Description Line 1"), "Line1"
+                iErrorCount = iErrorCount + 1
+                iTotalErrors = iTotalErrors + 1
+            End If
+            If Not IsNull(.Fields("Description Line 2")) Then
+                If IsError.LineTwo(.Fields("Description Line 2")) Then
+                    If IsError.DirectToAP(.Fields("Direct To AP")) Then
+                        bAddToErrorLog = True
+                        cSpecialBills.Add .Fields("Description Line 2"), "Line2"
+                        iErrorCount = iErrorCount + 1
+                        iTotalErrors = iTotalErrors + 1
+                    End If
+                End If
+            
+                If IsError.PositiveRepay(.Fields("Description Line 2"), .Fields("Invoice Amount")) Then
+                    bAddToErrorLog = True
+                    cSpecialBills.Add .Fields("Description Line 2").value, "Line2"
+                    iErrorCount = iErrorCount + 1
+                    iTotalErrors = iTotalErrors + 1
+                End If
+            End If
+            If IsError.BillingCode(.Fields("Billing Account Number")) Then
+                bAddToErrorLog = True
+                cSpecialBills.Add .Fields("Billing Account Number"), "BillingCd"
+                iErrorCount = iErrorCount + 1
+                iTotalErrors = iTotalErrors + 1
+            End If
+            If IsError.AllocationCode(.Fields("Allocation Account")) Then
+                bAddToErrorLog = True
+                cSpecialBills.Add .Fields("Allocation Account"), "AllocCd"
+                iErrorCount = iErrorCount + 1
+                iTotalErrors = iTotalErrors + 1
+            End If
+             Select Case IsError.APVendorNumber(.Fields("AP Vendor Number"), rsActiveAP)
+                Case "Inactive", "Invalid"
+                    bAddToErrorLog = True
+                    cSpecialBills.Add .Fields("AP Vendor Number"), "APVendNbr"
+                    iErrorCount = iErrorCount + 1
+                    iTotalErrors = iTotalErrors + 1
+                Case "Internal"
+                    If IsError.DirectToAP(.Fields("Direct To AP")) Then
+                        bAddToErrorLog = True
+                        cSpecialBills.Add .Fields("AP Vendor Number") & " Internal", "APVendNbr"
+                        iErrorCount = iErrorCount + 1
+                        iTotalErrors = iTotalErrors + 1
+                    End If
+                
+                Case Else
+                
+            End Select
+
+            If IsError.ARVendorNumber(.Fields("AR Vendor Number")) Then
+                bAddToErrorLog = True
+                cSpecialBills.Add "AR Number is Blank", "ARVendNbr"
+                iErrorCount = iErrorCount + 1
+                iTotalErrors = iTotalErrors + 1
+            End If
+            
+            If bAddToErrorLog Then
+            
+                With rsErrorsLog
+                    
+                    bRecordFound = False
+                    
+                    Do Until .EOF 'begin SB_ErrorsLog record iteration
+                    
+                        If .Fields("SpecialBillID") = cSpecialBills("SpecialBillID") Then 'Check if special bill is on log already
+                            
+                            .Edit
+                            
+                            For i = LBound(sErrors) To UBound(sErrors)
+                                
+                                On Error Resume Next 'If error does not exist for special bill, go to next error
+                                If cSpecialBills(sErrors(i)) <> "" Then
+                                    
+                                    If Err.Number <> 0 Then GoTo ProceedToNext
+                            
+                                    If IsEmpty(.Fields(sErrors(i))) Then 'Checking whether to add a new error or append to an existing
+                                        .Fields(sErrors(i)) = "1 - (" & cSpecialBills(sErrors(i)) & ")"
+                                    Else 'Append to an existing error
+                                        If .Fields(sErrors(i)) <> "Not an error" And (InStr(.Fields(sErrors(i)).value, cSpecialBills(sErrors(i))) < 1) Then
+                                            Dim sFieldArray() As String
+                                            sFieldArray = Split(.Fields(sErrors(i)), " - ") 'Split the existing error to increment the number of times this was a error and append new error reason
+                                            .Fields(sErrors(i)) = CInt(sFieldArray(0)) + 1 & " - " & Split(sFieldArray(1), ")")(0) & ", " & cSpecialBills(sErrors(i)) & ")"
+                                        Else
+                                            If .Fields("RecentlyChanged") = True Then
+                                                If .Fields(sErrors(i)) = "Not an error" Then
+                                                    iErrorCount = iErrorCount - 2
+                                                    iTotalErrors = iTotalErrors - 2
+                                                End If
+                                            Else
+                                                iErrorCount = iErrorCount - 1
+                                                iTotalErrors = iTotalErrors - 1
+                                            End If
+                                        End If
+                                    End If
+                                    
+                                End If
+ProceedToNext:
+                                On Error GoTo 0
+                            Next
+                            If .Fields("TotalErrors") + iErrorCount < 0 Then
+                                .Fields("TotalErrors") = 0
+                            Else
+                                .Fields("TotalErrors") = .Fields("TotalErrors") + iErrorCount 'Update the total errors for this special bill
+                            End If
+                            .Fields("RecentlyChanged") = False
+                            .Update
+                            bRecordFound = True
+                            Exit Do
+                        
+                        End If 'End update field
+
+                        .MoveNext
+                    
+                    Loop 'End SB_ErrorsLog record iteration
+                    
+                    If Not bRecordFound Then
+                        
+                        .AddNew
+                        !SpecialBillID = cSpecialBills("SpecialBillID")
+                        !CoordID = cSpecialBills("CoordID")
+                        !InvDt = cSpecialBills("InvDt")
+                        For i = LBound(sErrors) To UBound(sErrors)
+                            
+                            On Error Resume Next
+                            If cSpecialBills(sErrors(i)) Then
+                                .Fields(sErrors(i)) = "1 - (" & cSpecialBills(sErrors(i)) & ")"
+                            End If
+                            On Error GoTo 0
+                        
+                        Next
+                        .Fields("TotalErrors") = iErrorCount
+                        .Fields("RecentlyChanged") = False
+                        .Update
+                        Sleep 1000
+                    End If
+                        
+                rsErrorsLog.MoveFirst
+                End With 'ErrorsLog
+            
+            End If
+NextRecord:
+            .MoveNext
+            Set cSpecialBills = Nothing
+            bAddToErrorLog = False
+            
+            If iRecordCount Mod 50 = 0 Then Sleep 1000
+        
+        Loop
+    
+        SysCmd acSysCmdRemoveMeter
+    End With 'rsCurrentWeek
+       
+    If Not IsNull(DLast("TotalErrors", "WeekLog")) Then
+        iTotalErrors = iTotalErrors + DLast("TotalErrors", "WeekLog")
+    End If
+    
+    sSQLCommand = "UPDATE WeekLog SET TotalErrors = '" & iTotalErrors & "', TotalSpecialBills = '" & rsCurrentWeek.RecordCount & "' WHERE WeekOf = '" & sWeekOfDate & "'"
+    Debug.Print sSQLCommand
+    
+    DoCmd.SetWarnings False
+    DoCmd.RunSQL sSQLCommand
+    DoCmd.SetWarnings True
+    
+    Set rsCurrentWeek = Nothing
+    Set rsErrorsLog = Nothing
+    Set rsCoordinators = Nothing
+    Set cSpecialBills = Nothing
+    
+    Set rsReversals = CurrentDb.OpenRecordset("InvoiceReversalQueue")
+    
+    With rsReversals
+    
+        Do Until .EOF
+        
+            If IsNull(.Fields("Reason")) Then
+                .Edit
+                
+                If .Fields("Seq") = 2 Then .Fields("Reason") = "Seq 2"
+                
+                sReversalAP = IsError.APVendorNumber(.Fields("AP_Vendor"), rsActiveAP)
+                
+                Select Case sReversalAP
+                    Case "Inactive", "Invalid", "Internal"
+                        If IsNull(.Fields("Reason")) Then
+                            .Fields("Reason") = "AP Vendor is " & sReversalAP
+                        Else
+                            .Fields("Reason") = .Fields("Reason") & ", AP Vendor is " & sReversalAP
+                        End If
+                End Select
+                
+                .Update
+            End If
+            .MoveNext
+        
+        Loop 'rsReversal loop
+    
+    End With 'rsReversals
+    
+    Set rsReversals = Nothing
+    
+    MsgBox "Error Logging is complete.", vbOKOnly
+    
+End Sub
