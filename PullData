@@ -1,0 +1,161 @@
+Option Compare Database
+Option Explicit
+
+Private Declare Sub Sleep Lib "kernel32" (ByVal dwMilliseconds As Long)
+
+Sub PullSpecialBillQueues()
+
+    Dim CASIS As New clsCASIS
+    Dim rsWeekLog, rsPriorWeek, rsCoordLog As DAO.Recordset
+    Dim sWeekOfDate, sSQLCommand, sSpecialBillPath, sActiveAPPath, sReversalsPath As String
+    Dim sCompletedDate As String
+    Dim bWeekOfFound As Boolean
+    Dim oIE As InternetExplorer
+    
+    DoCmd.SetWarnings False
+    
+    sSpecialBillPath = "C:\Users\" & Environ("username") & "\Downloads\special_bill_search.xlsx"
+    sActiveAPPath = "C:\Users\" & Environ("username") & "\Downloads\ActiveAP.xlsx"
+    sReversalsPath = "C:\Users\" & Environ("username") & "\Downloads\Invoice_Reversal_Search_Export.xlsx"
+    sWeekOfDate = Split(Now - (Weekday(Now, vbMonday) - 1), " ")(0)
+    sCompletedDate = Split(Now + (7 - Weekday(Now)) - 7, " ")(0)
+    Set rsWeekLog = CurrentDb.OpenRecordset("WeekLog")
+    
+    Do Until rsWeekLog.EOF
+    
+        If rsWeekLog.Fields("WeekOf") = sWeekOfDate Then
+            bWeekOfFound = True
+            If rsWeekLog.Fields("FirstRun") = False Then
+'                DoCmd.OpenQuery "qryAppendLastWeekToMaster"
+'                DoCmd.Close acQuery, "qryAppendLastWeekToMaster", acSaveYes
+'                DoCmd.OpenQuery "qryAppendSBErrorLogToMaster"
+'                DoCmd.Close acQuery, "qryAppendSBErrorLogToMaster", acSaveYes
+'                rsWeekLog.Edit
+'                rsWeekLog.Fields("FirstRun") = True
+'                rsWeekLog.Update
+                Exit Do
+            End If
+        End If
+        
+        rsWeekLog.MoveNext
+        
+    Loop
+    
+    CASIS.init
+    
+    If Not bWeekOfFound Then
+        
+        SysCmd acSysCmdInitMeter, "Pulling Prior Week CASIS Completed...", 1
+        CASIS.PullSpecialBillQueues sInvoiceDate:=sCompletedDate, Complete_Queue:=True
+        ImportAppendSpecialBillQueue "TempData", sSpecialBillPath, "qryAppendLastWeekToMaster"
+        CASIS.PullSpecialBillQueues sInvoiceDate:=sCompletedDate, Active_Queue:=True
+        ImportAppendSpecialBillQueue "TempData", sSpecialBillPath, "qryAppendLastWeekToMaster"
+        Set rsPriorWeek = CurrentDb.OpenRecordset("qryPriorWeekCount")
+        rsPriorWeek.MoveLast
+        sSQLCommand = "UPDATE WeekLog SET TotalSpecialBills = '" & rsPriorWeek.RecordCount & "', TotalErrors = '" & DSum("TotalErrors", "SB_ErrorsLog") & "' WHERE WeekOf = '" & DLast("WeekOf", "WeekLog") & "'"
+        DoCmd.RunSQL sSQLCommand
+        Set rsPriorWeek = Nothing
+        DoCmd.OpenQuery "qryAppendSBErrorLogToMaster"
+        DoCmd.Close acQuery, "qryAppendSBErrorLogToMaster", acSaveYes
+        sSQLCommand = "DELETE * FROM SB_ErrorsLog"
+        DoCmd.RunSQL sSQLCommand
+        
+        Set rsCoordLog = CurrentDb.OpenRecordset("CoordinatorLog")
+    
+        With rsCoordLog
+        
+            Do Until .EOF
+            
+                .Edit
+                .Fields("CurrentKeyed") = DCount("*", "MasterData_SB", "[CoordID] LIKE '" & .Fields("Coordinator") & "*'")
+                .Fields("CurrentErrors") = DSum("TotalErrors", "SB_ErrorsLogMaster", "[CoordID] LIKE '" & .Fields("Coordinator") & "*'")
+                If IsNull(.Fields("CurrentErrors")) Then .Fields("CurrentErrors") = 0
+                .Update
+                .MoveNext
+            
+            Loop
+        
+        End With
+        
+        With rsWeekLog
+            .AddNew
+            !WeekOf = sWeekOfDate
+            !FirstRun = True
+            .Update
+        End With
+    
+    End If
+    
+    sSQLCommand = "DELETE * FROM SpecialBillQueue"
+    DoCmd.RunSQL sSQLCommand
+    sSQLCommand = "DELETE * FROM InvoiceReversalQueue"
+    DoCmd.RunSQL sSQLCommand
+    
+    SysCmd acSysCmdInitMeter, "Pulling CASIS Queues...", 4
+    SysCmd acSysCmdUpdateMeter, 1
+    CASIS.PullSpecialBillQueues Active_Queue:=True
+    ImportAppendSpecialBillQueue "TempData", sSpecialBillPath, "qryAppendNewSpecialBills"
+    
+    SysCmd acSysCmdUpdateMeter, 2
+    CASIS.PullSpecialBillQueues T1Pending_Queue:=True
+    ImportAppendSpecialBillQueue "TempData", sSpecialBillPath, "qryAppendNewSpecialBills"
+    
+    SysCmd acSysCmdUpdateMeter, 3
+    CASIS.PullSpecialBillQueues T2Pending_Queue:=True
+    ImportAppendSpecialBillQueue "TempData", sSpecialBillPath, "qryAppendNewSpecialBills"
+    
+    SysCmd acSysCmdUpdateMeter, 4
+    CASIS.PullReversalQueues
+    ImportAppendSpecialBillQueue "InvoiceReversals", sReversalsPath, "qryAppendInvoiceReversalQueue"
+    
+    SysCmd acSysCmdInitMeter, "Pulling Active AP Vendors...", 1
+    Call PullActiveAPVendors
+    ImportAppendSpecialBillQueue "ActiveAPVendors", sActiveAPPath
+    
+    
+    SysCmd acSysCmdRemoveMeter
+    CASIS.IEwindow.Quit
+    
+    DoCmd.SetWarnings True
+    
+    MsgBox "Queues are completed.", vbOKOnly
+    
+End Sub
+
+Sub ImportAppendSpecialBillQueue(ByVal sTableToClear As String, ByVal sFilePath As String, Optional sQueriesToRun As String)
+
+    Dim sSQLCommand As String
+    
+    DoCmd.SetWarnings False
+        
+    sSQLCommand = "DELETE * FROM " & sTableToClear
+    DoCmd.RunSQL sSQLCommand
+    
+    If Len(Dir$(sFilePath)) > 0 Then
+        DoCmd.TransferSpreadsheet acImport, acSpreadsheetTypeExcel12, sTableToClear, sFilePath, True
+        If sQueriesToRun <> "" Then
+            DoCmd.OpenQuery sQueriesToRun
+            DoCmd.Close acQuery, sQueriesToRun, acSaveYes
+        End If
+    End If
+    
+    DoCmd.SetWarnings True
+    
+End Sub
+Public Sub PullActiveAPVendors()
+
+    Dim xlApp As New Excel.Application
+    Dim sFilePath As String
+    
+    sFilePath = ""
+    
+    xlApp.Visible = True
+    
+    xlApp.Workbooks.Open sFilePath, True, False
+    
+    xlApp.Run "Testing"
+    
+    xlApp.Quit
+    
+
+End Sub
