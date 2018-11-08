@@ -1,0 +1,157 @@
+Option Compare Database
+Option Explicit
+
+Public Function LineOne(sString As String) As Boolean
+    
+    LineOne = False
+    
+    Dim sSpecialCharacters() As String
+    Dim i As Integer
+    
+    sSpecialCharacters = Split("!,@,#,$,%,^,&,*,=,+,{,},[,],<,>,?,/,\,|,:,;,~,`," & Chr(32) & "", ",")
+    
+    For i = LBound(sSpecialCharacters) To UBound(sSpecialCharacters)
+    
+        If Left(sString, 1) = sSpecialCharacters(i) Or Right(sString, 1) = sSpecialCharacters(i) Then
+            LineOne = True
+            Exit For
+        End If
+    
+    Next
+    
+End Function
+
+Public Function LineTwo(sString As String) As Boolean
+
+    LineTwo = False
+    
+    Dim sCheckOrRecon() As String
+    Dim i As Integer
+    
+    sCheckOrRecon = Split("CK,CHK,CHECK,RECON", ",")
+    
+    For i = LBound(sCheckOrRecon) To UBound(sCheckOrRecon)
+    
+        If Left(sString, Len(sCheckOrRecon(i))) = sCheckOrRecon(i) Then
+            LineTwo = True
+            Exit For
+        End If
+    
+    Next
+
+End Function
+
+Public Function BillingCode(sString As String) As Boolean
+
+    Select Case sString
+        Case 21, 47, 82, 94, 39
+            BillingCode = False
+        Case Else
+            BillingCode = True
+    End Select
+
+End Function
+
+Public Function AllocationCode(sString As String) As Boolean
+
+    If sString = 39 Then AllocationCode = True Else AllocationCode = False
+
+End Function
+
+Public Function APVendorNumber(ByVal sString As String, ByVal rsActiveAP As Recordset) As String
+    
+    APVendorNumber = "Inactive"
+    
+    If sString = 502976 Or IsEmpty(sString) Or sString = "" Then
+        APVendorNumber = "Invalid"
+        Exit Function
+    End If
+    
+    With rsActiveAP
+        .MoveFirst
+        Do Until .EOF
+        
+            If .Fields("Vendor") = sString Then
+                If .Fields("Class") = 1 Then
+                    APVendorNumber = "Active"
+                Else
+                    APVendorNumber = "Internal"
+                End If
+                Exit Do
+            End If
+            
+            .MoveNext
+            
+        Loop
+    
+    End With
+
+End Function
+
+Public Function ARVendorNumber(sString As String) As Boolean
+    
+    If IsEmpty(sString) Or sString = "" Then ARVendorNumber = True Else ARVendorNumber = False
+
+End Function
+
+Public Function DirectToAP(sString As String) As Boolean
+    
+    If sString = "Y" Then DirectToAP = True Else DirectToAP = False
+
+End Function
+
+Public Sub CheckCoordinatorLog(ByVal sString As String, ByVal rsCoordLog As Recordset)
+
+    Dim bFound As Boolean
+
+    With rsCoordLog
+        
+        .MoveFirst
+        
+        Do Until .EOF
+        
+            If .Fields("Coordinator") = sString Then
+                bFound = True
+                Exit Do
+            End If
+                
+            .MoveNext
+        
+        Loop
+    
+    End With
+    
+    If bFound = False Then
+        With rsCoordLog
+            .AddNew
+            !Coordinator = sString
+            .Update
+        End With
+    End If
+    
+    'On Error GoTo 0
+
+End Sub
+Public Function PositiveRepay(sString As String, sInvAmt As String) As Boolean
+
+    If InStr(sString, "REPAY") > 0 Then
+        If CDec(sInvAmt) > 0 Then PositiveRepay = True
+    End If
+
+End Function
+
+Public Function RemoveCoordSB(ByRef sCoordList() As String, ByVal sCoord As String) As Boolean
+
+    Dim i As Integer
+    
+    For i = LBound(sCoordList) To UBound(sCoordList)
+    
+        If sCoord = sCoordList(i) Then
+            RemoveCoordSB = True
+            Exit For
+        End If
+    
+    Next
+    
+
+End Function
