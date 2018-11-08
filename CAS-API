@@ -1,0 +1,381 @@
+Option Compare Database
+Option Explicit
+
+Private Declare Function findWindowEx Lib "user32" Alias "FindWindowExA" _
+(ByVal hWnd1 As Long, ByVal hWnd2 As Long, ByVal lpsz1 As String, _
+ByVal lpsz2 As String) As Long
+
+Private Declare Sub Sleep Lib "kernel32" (ByVal dwMilliseconds As Long)
+
+
+Private p_ieWindow As InternetExplorer
+Private p_casisPlaces As New Collection
+Public Sub init()
+    
+    p_casisPlaces.Add "Home Page", "Home"
+    p_casisPlaces.Add "SpecialBills", "SpecialBills"
+    p_casisPlaces.Add "Queues", "SpecialBillQueue"
+    p_casisPlaces.Add "Queues", "ReversalQueue"
+    
+    IEwindow = New InternetExplorerMedium
+    IEwindow.Visible = True
+    IEwindow.navigate p_casisPlaces("Home")
+    While IEwindow.ReadyState <> 4 Or IEwindow.Busy: DoEvents: Wend
+    If InStr(IEwindow.LocationURL, "login") > 0 Then
+        MsgBox "Login to CASIS and then click okay", vbOKOnly
+        While InStr(IEwindow.LocationURL, "login") > 0: DoEvents: Wend
+    End If
+    
+
+
+End Sub
+
+'Public Property Let blank(value As String)
+'    p_blank = value
+'End Property
+'Public Property Get blank() As String
+'    blank = p_blank
+'End Property
+Public Property Let IEwindow(value As InternetExplorer)
+    Set p_ieWindow = value
+End Property
+Public Property Get IEwindow() As InternetExplorer
+    Set IEwindow = p_ieWindow
+End Property
+Public Sub CreateSpecialBill(oSpecialBill As clsSpecialBill)
+
+    Dim oDiv As clsDivision
+    Dim oAttachment As clsSBAttachment
+    Dim i As Integer
+    Dim oSupressCheckBox As Object
+    
+    With IEwindow
+        
+        
+        .navigate p_casisPlaces("SpecialBills")
+        
+        While IEwindow.ReadyState <> 4 Or IEwindow.Busy: DoEvents: Wend
+        
+        .Document.all("ctrLocn").value = oSpecialBill.CtrlLocn
+        .Document.all("vendorId").value = oSpecialBill.VendorID
+        .Document.all("invAmount").value = oSpecialBill.InvAmount
+        .Document.all("prdCovrd").value = oSpecialBill.PrdCovrd
+        .Document.all("mstrProgNbr").value = oSpecialBill.MstrProgNbr
+        .Document.all("caseNbr").value = oSpecialBill.CaseNbr
+        .Document.all("origInvNbr").value = oSpecialBill.OrigInvNbr
+        .Document.all("origInvDate").value = oSpecialBill.OrigInvDate
+        .Document.all("pimCd").value = oSpecialBill.PIMcd
+        .Document.all("allocCustCd").value = oSpecialBill.AllocCustCd
+        
+'        For z = 0 To 4
+'
+'            .document.all("invText" & z + 1).value = "" 'LineDescription(z) 'Array or individual properties?
+'
+'        Next
+    
+        .Document.all("notes").value = oSpecialBill.Notes
+        .Document.all("billingAcct").value = oSpecialBill.BillingAcct
+        .Document.all("allocationAcct").value = oSpecialBill.AllocationAcct
+        
+        For Each oDiv In oSpecialBill.DivList
+            
+            .Document.all("insert").Click
+            .Document.all("divList[" & i & "].divisionID").value = oDiv.DivisionID
+            .Document.all("divList[" & i & "].divAmount").value = oDiv.DivAmount
+            
+            i = i + 1
+            
+        Next
+        
+        If oSpecialBill.DirApInd Then
+            .Document.getElementById("directAPCheck").Click
+        End If
+        
+        .Document.all("saveButton").Click
+        
+        While IEwindow.ReadyState <> 4 Or IEwindow.Busy: DoEvents: Wend
+        
+        If oSpecialBill.ID = "" Then
+            oSpecialBill.ID = .Document.all("specialBillSearchNo").value
+        End If
+        
+        
+        .navigate "http://cas.usfood.com/CAS/spclBillAttachment.jsp?spclBillId=" & oSpecialBill.ID
+        
+        While IEwindow.ReadyState <> 4 Or IEwindow.Busy: DoEvents: Wend
+        
+        For Each oAttachment In oSpecialBill.Attachments
+            
+            .Document.all("doInsert").Click
+
+            InsertSpecialBillAttachment (oAttachment.FileLocation)
+            
+            .Document.all("file[1]").Focus
+            .Document.all("file[1]").Click
+            .Document.all("doSave").Click
+            
+            While IEwindow.ReadyState <> 4 Or IEwindow.Busy: DoEvents: Wend
+            
+            If oAttachment.Supress Then
+                Dim count As Integer
+                count = 1
+                For Each oSupressCheckBox In IEwindow.Document.getElementsByTagName("input")
+                    If oSupressCheckBox = "supressOnWebInd" Then
+                        If count = i Then
+                            oSupressCheckBox.Click
+                            .Document.all("doSave").Click
+                            While IEwindow.ReadyState <> 4 Or IEwindow.Busy: DoEvents: Wend
+                            Exit For
+                        End If
+                        count = count + 1
+                    End If
+                Next
+            End If
+                        
+            
+            
+            i = i + 1
+        
+        Next
+    
+    End With
+
+End Sub
+Private Sub InsertSpecialBillAttachment(ByVal fName As String)
+
+Dim strScript As String, sScriptFileName As String, wsh As Object
+    Set wsh = VBA.CreateObject("WScript.Shell")
+    '---Create VBscript String---
+    strScript = "WScript.Sleep 2000" & vbNewLine & _
+                "Dim wsh" & vbNewLine & _
+                "Set wsh = CreateObject(""WScript.Shell"")" & vbNewLine & _
+                "wsh.SendKeys """ & fName & """" & vbNewLine & _
+                "wsh.SendKeys ""{ENTER}""" & vbNewLine & _
+                "Set wsh = Nothing"
+    '---Save the VBscript String to file---
+    sScriptFileName = wsh.ExpandEnvironmentStrings("%Temp%") & "\zz_automation.vbs"
+    Open sScriptFileName For Output As #1
+    Print #1, strScript
+    Close #1
+    '---Execute the VBscript file asynchronously---
+    wsh.Run """" & sScriptFileName & """"
+    Set wsh = Nothing
+
+End Sub
+
+Public Sub PullSpecialBillQueues(Optional sSavePath As String, Optional sInvoiceDate As String, Optional Active_Queue As Boolean, Optional Complete_Queue As Boolean, Optional DivLevel_Queue As Boolean, _
+    Optional NSCclerk_Queue As Boolean, Optional NSCplanned_Queue As Boolean, Optional T1Pending_Queue As Boolean, Optional T2Pending_Queue As Boolean, _
+    Optional VoidCancel_Queue As Boolean)
+    
+    Dim sCASISerror, sExportPath As String
+    Dim i, Timer, ClickCount As Integer
+    Dim oErrorWindow As Object
+    Dim bQueues() As Variant
+    
+    bQueues = Array(Active_Queue, Complete_Queue, DivLevel_Queue, NSCclerk_Queue, NSCplanned_Queue, T1Pending_Queue, T2Pending_Queue, VoidCancel_Queue)
+    sCASISerror = "http://cas.usfood.com/CAS/jsp/error.jsp?errorMessage=No results found matching the search criteria.|"
+    sExportPath = "C:\Users\" & Environ("username") & "\Downloads\special_bill_search.xlsx"
+    
+    If sInvoiceDate = "" Then sInvoiceDate = Split(Now + (7 - Weekday(Now)), " ")(0)
+    
+
+    With IEwindow
+        
+        .Visible = False
+        .Visible = True
+        .navigate p_casisPlaces("SpecialBillQueue")
+        While IEwindow.ReadyState <> 4 Or IEwindow.Busy: DoEvents: Wend
+        
+        For i = LBound(bQueues) To UBound(bQueues)
+                    
+            If bQueues(i) Then
+            
+                KillAFile (sExportPath)
+                    
+                Sleep 1000
+
+                Select Case i
+                
+                    Case 0
+                        .Document.all("status").value = "S30"
+                        
+                    Case 1
+                        .Document.all("status").value = "S40"
+                        
+                    Case 2
+                        .Document.all("status").value = "S10"
+                        
+                    Case 3
+                        .Document.all("status").value = "S15"
+                        
+                    Case 4
+                        .Document.all("status").value = "S14"
+                        
+                    Case 5
+                        .Document.all("status").value = "S20"
+                        
+                    Case 6
+                        .Document.all("status").value = "S25"
+                        
+                    Case 7
+                        .Document.all("status").value = "S50"
+                    
+                End Select
+                .Document.all("invoiceFromDate").value = sInvoiceDate
+                .Document.all("invoiceToDate").value = sInvoiceDate
+                .Document.all("searchButton").Click
+                While IEwindow.ReadyState <> 4 Or IEwindow.Busy: DoEvents: Wend
+                
+                If LookForErrorWindow(sCASISerror, oErrorWindow) Then
+                    Sleep 1000
+                    oErrorWindow.Document.all("Close").Click
+                    GoTo NextStatus
+                Else
+                    .Document.all("exportButton").Click
+                    While IEwindow.Busy: DoEvents: Wend
+
+                End If
+                              
+RetryClick:
+                
+                If ClickCount > 2 Then
+                    MsgBox "Something went wrong.  Exiting function", vbOKOnly
+                    Exit Sub
+                End If
+                ClickCount = ClickCount + 1
+                
+                ClickFrameBar "Save", IEwindow
+                
+                While Dir(sExportPath) = ""
+                    If Timer > 30 Then
+                        Timer = 0
+                        GoTo RetryClick
+                    End If
+                    Sleep 1000
+                    Timer = Timer + 1
+                Wend
+                
+                'Action to do with exported file, or only fill one criteria at a time and handle this in main module.
+                                
+            End If
+NextStatus:
+        Next
+        
+    
+    End With
+
+
+End Sub
+
+Public Sub PullReversalQueues()
+
+    Dim sCASISerror, sExportPath As String
+    Dim i, Timer, ClickCount As Integer
+    Dim oErrorWindow As Object
+    
+    sCASISerror = "http://cas.usfood.com/CAS/jsp/error.jsp?errorMessage=No results found matching the search criteria.|"
+    sExportPath = "C:\Users\" & Environ("username") & "\Downloads\Invoice_Reversal_Search_Export.xlsx"
+    
+    KillAFile (sExportPath)
+    
+    With IEwindow
+    
+        .Visible = False
+        .Visible = True
+        .navigate p_casisPlaces("ReversalQueue")
+        While IEwindow.ReadyState <> 4 Or IEwindow.Busy: DoEvents: Wend
+        .Document.all("statuses").value = "A"
+        .Document.getElementById("searchButton").Click
+        While IEwindow.ReadyState <> 4 Or IEwindow.Busy: DoEvents: Wend
+        
+        If LookForErrorWindow(sCASISerror, oErrorWindow) Then
+            Sleep 1000
+            oErrorWindow.Document.all("Close").Click
+            'MsgBox "No reversals in approved queue. Exiting.", vbOKOnly
+            Exit Sub
+        Else
+            .Document.all("exportButton").Click
+            While IEwindow.Busy: DoEvents: Wend
+
+        End If
+                      
+RetryClick:
+        
+        If ClickCount > 2 Then
+            MsgBox "Something went wrong.  Exiting function", vbOKOnly
+            Exit Sub
+        End If
+        ClickCount = ClickCount + 1
+        
+        ClickFrameBar "Save", IEwindow
+        
+        While Dir(sExportPath) = ""
+            If Timer > 30 Then
+                Timer = 0
+                GoTo RetryClick
+            End If
+            Sleep 1000
+            Timer = Timer + 1
+        Wend
+        
+    End With
+        
+        
+
+
+End Sub
+
+Private Function LookForErrorWindow(ByVal sErrorName As String, oWindowToSetIfFound As Object) As Boolean
+
+    Dim obj As Object
+    
+    For Each obj In CreateObject("Shell.Application").Windows
+    
+        If InStr(obj.Name, "Internet Explorer") > 0 And InStr(obj.LocationURL, sErrorName) > 0 Then
+            Set oWindowToSetIfFound = obj
+            LookForErrorWindow = True
+            Exit For
+        End If
+                
+    Next
+
+
+End Function
+Private Sub ClickFrameBar(sSaveType As String, oIE As InternetExplorer)
+'Finds the download bar in IE window and clicks the specified button.
+
+    Dim h As LongPtr
+    Dim oUIA As New UIAutomationClient.CUIAutomation
+    Dim uiaElem As IUIAutomationElement
+    Dim uiaBtn As UIAutomationClient.IUIAutomationElement
+    Dim uiaIP As IUIAutomationInvokePattern
+    Dim uiaCnd As IUIAutomationCondition
+    
+    'Find the hwnd of the frame notification bar
+    Do Until h <> 0
+        h = oIE.Hwnd
+        h = findWindowEx(h, 0, "Frame Notification Bar", vbNullString)
+    Loop
+    
+    'Point to the specified button to click
+    Set uiaElem = oUIA.ElementFromHandle(ByVal h)
+    Set uiaCnd = oUIA.CreatePropertyCondition(UIA_NamePropertyId, sSaveType)
+    Set uiaBtn = uiaElem.FindFirst(TreeScope_Subtree, uiaCnd)
+    Set uiaIP = uiaBtn.GetCurrentPattern(UIA_InvokePatternId)
+    
+    Sleep 1000
+    
+    uiaIP.Invoke 'Click the button
+
+
+End Sub
+
+Private Sub KillAFile(sFilePath As String)
+'Delete a file if it's found
+
+    If Len(Dir$(sFilePath)) > 0 Then Kill sFilePath
+
+End Sub
+
+
+
